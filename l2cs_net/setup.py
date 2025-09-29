@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'run_gaze_tracking = scripts.run_gaze_tracking:main',
         ],
     },
 )
