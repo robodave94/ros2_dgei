@@ -346,6 +346,7 @@ class GazeTrackingNode(Node):
         self.declare_parameter('camera_number', 0)  # Default to first camera
         self.declare_parameter('visualisation_topic', '/gaze/vis_frame') 
         self.declare_parameter('data_publishing_topic', '/gaze/data')
+        self.declare_parameter('raw_image_topic', '/gaze/image_raw')  # Raw image topic
         self.declare_parameter('model_path', '/home/vscode/dev/gaze_ws/src/ros2_dgei/l2cs_net/weights/L2CSNet_gaze360.pkl')
         self.declare_parameter('device', 'cuda')
         self.declare_parameter('backbone_architecture', 'ResNet50')
@@ -366,6 +367,7 @@ class GazeTrackingNode(Node):
         self.camera_number = self.get_parameter('camera_number').get_parameter_value().integer_value
         self.visualisation_topic = self.get_parameter('visualisation_topic').get_parameter_value().string_value
         self.data_publishing_topic = self.get_parameter('data_publishing_topic').get_parameter_value().string_value
+        self.raw_image_topic = self.get_parameter('raw_image_topic').get_parameter_value().string_value
         self.model_path = self.get_parameter('model_path').get_parameter_value().string_value
         self.device = self.get_parameter('device').get_parameter_value().string_value
         self.backbone_architecture = self.get_parameter('backbone_architecture').get_parameter_value().string_value
@@ -386,6 +388,7 @@ class GazeTrackingNode(Node):
         self.get_logger().info(f'Camera number: {self.camera_number}')
         self.get_logger().info(f'Visualization topic: {self.visualisation_topic}')
         self.get_logger().info(f'Data topic: {self.data_publishing_topic}')
+        self.get_logger().info(f'Raw image topic: {self.raw_image_topic}')
         self.get_logger().info(f'Model path: {self.model_path}')
         self.get_logger().info(f'Device: {self.device}')
         self.get_logger().info(f'Backbone architecture: {self.backbone_architecture}')
@@ -401,6 +404,7 @@ class GazeTrackingNode(Node):
         # Thread-safe variables for sharing data between threads
         self.frame_lock = threading.Lock()
         self.latest_vis_frame = None
+        self.latest_raw_frame = None  # Store the raw frame before processing
         self.latest_gaze_msg = None  # Store the processed GazeFrame message
         self.running = True
         
@@ -436,6 +440,7 @@ class GazeTrackingNode(Node):
 
         # Initialize publishers
         self.rgb_publisher = self.create_publisher(Image, self.visualisation_topic, 10) 
+        self.raw_image_publisher = self.create_publisher(Image, self.raw_image_topic, 10)  # Raw image publisher
         self.gaze_data_publisher = self.create_publisher(GazeFrame, self.data_publishing_topic, 10)
 
         # Initialize camera
@@ -481,6 +486,9 @@ class GazeTrackingNode(Node):
                         self.get_logger().warn("Failed to read frame from camera")
                         continue
 
+                    # Store raw frame (make a copy to avoid modifications affecting raw frame)
+                    raw_frame = frame.copy()
+
                     # Process gaze detection
                     g_success = self.Gaze_detector.detect_gaze(frame)
                     
@@ -523,6 +531,7 @@ class GazeTrackingNode(Node):
                     # Thread-safe update of shared data
                     with self.frame_lock:
                         self.latest_vis_frame = vframe
+                        self.latest_raw_frame = raw_frame  # Store the raw frame
                         self.latest_gaze_msg = gaze_msg
                         
                 except Exception as e:
@@ -537,6 +546,7 @@ class GazeTrackingNode(Node):
             # Get latest processed data (thread-safe)
             with self.frame_lock:
                 vis_frame = self.latest_vis_frame
+                raw_frame = self.latest_raw_frame
                 gaze_msg = self.latest_gaze_msg
             
             # Publish gaze data message if available
@@ -555,6 +565,11 @@ class GazeTrackingNode(Node):
             if vis_frame is not None and isinstance(vis_frame, np.ndarray):
                 ros_image = self.bridge.cv2_to_imgmsg(vis_frame, encoding="bgr8")
                 self.rgb_publisher.publish(ros_image)
+            
+            # Publish raw image frame if available
+            if raw_frame is not None and isinstance(raw_frame, np.ndarray):
+                raw_ros_image = self.bridge.cv2_to_imgmsg(raw_frame, encoding="bgr8")
+                self.raw_image_publisher.publish(raw_ros_image)
                     
         except Exception as e:
             self.get_logger().error(f"Error in publish callback: {e}")

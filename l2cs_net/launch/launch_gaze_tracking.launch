@@ -4,6 +4,7 @@
     <arg name="camera_number" default="0" />
     <arg name="visualisation_topic" default="/gaze/vis_frame" />
     <arg name="data_publishing_topic" default="/gaze/data" />
+    <arg name="raw_image_topic" default="/gaze/image_raw" />
     <arg name="model_path" default="/home/vscode/dev/gaze_ws/src/ros2_dgei/l2cs_net/weights/L2CSNet_gaze360.pkl" />
     <arg name="device" default="cuda" />
     <arg name="backbone_architecture" default="ResNet50" />
@@ -27,6 +28,7 @@
         <param name="camera_number" type="int" value="$(var camera_number)" />
         <param name="visualisation_topic" type="str" value="$(var visualisation_topic)" />
         <param name="data_publishing_topic" type="str" value="$(var data_publishing_topic)" />
+        <param name="raw_image_topic" type="str" value="$(var raw_image_topic)" />
         <param name="model_path" type="str" value="$(var model_path)" />
         <param name="device" type="str" value="$(var device)" />
         <param name="backbone_architecture" type="str" value="$(var backbone_architecture)" />
