@@ -12,12 +12,241 @@ from l2cs.gaze_detectors import Gaze_Detector
 import time
 import threading
 import numpy as np
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
+
+class KalmanBoxTracker:
+    """
+    Kalman filter for tracking bounding boxes in 2D space
+    State vector: [center_x, center_y, width, height, dx, dy, dw, dh]
+    """
+    count = 0
+    
+    def __init__(self, bbox, gaze_data=None, gaze_smoothing=0.7, 
+                 initial_hits=1, initial_hit_streak=1, initial_age=1):
+        """Initialize Kalman filter for bounding box tracking"""
+        KalmanBoxTracker.count += 1
+        # Reset counter to 1 when it reaches 51 (so IDs cycle from 1-50)
+        if KalmanBoxTracker.count > 50:
+            KalmanBoxTracker.count = 1
+        self.id = KalmanBoxTracker.count
+        self.time_since_update = 0
+        self.hits = initial_hits
+        self.hit_streak = initial_hit_streak
+        self.age = initial_age
+        self.gaze_smoothing = gaze_smoothing
+        
+        # Convert bbox [x1, y1, x2, y2] to [center_x, center_y, width, height]
+        self.bbox_to_state(bbox)
+        
+        # Store gaze data
+        self.gaze_data = gaze_data or {'pitch': 0.0, 'yaw': 0.0, 'score': 0.0}
+        
+        # Initialize Kalman filter
+        self.kf = self.init_kalman_filter()
+        
+    def init_kalman_filter(self):
+        """Initialize simple Kalman filter (custom implementation)"""
+        # State: [center_x, center_y, width, height, dx, dy, dw, dh]
+        self.x = np.zeros(8)  # State vector
+        self.x[:4] = self.state_vec
+        
+        # State covariance matrix
+        self.P = np.eye(8) * 1000.0
+        self.P[4:, 4:] *= 0.01  # Lower uncertainty for velocities
+        
+        # State transition matrix (constant velocity model)
+        self.F = np.array([
+            [1, 0, 0, 0, 1, 0, 0, 0],
+            [0, 1, 0, 0, 0, 1, 0, 0],
+            [0, 0, 1, 0, 0, 0, 1, 0],
+            [0, 0, 0, 1, 0, 0, 0, 1],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1]
+        ])
+        
+        # Process noise covariance
+        self.Q = np.eye(8) * 0.1
+        self.Q[4:, 4:] *= 0.01
+        
+        # Measurement matrix
+        self.H = np.eye(4, 8)
+        
+        # Measurement noise covariance
+        self.R = np.eye(4) * 10.0
+    
+    def bbox_to_state(self, bbox):
+        """Convert bbox [x1, y1, x2, y2] to state [center_x, center_y, width, height]"""
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        x = bbox[0] + w/2.0
+        y = bbox[1] + h/2.0
+        self.state_vec = np.array([x, y, w, h])
+        
+    def state_to_bbox(self):
+        """Convert state [center_x, center_y, width, height] to bbox [x1, y1, x2, y2]"""
+        w = self.x[2]
+        h = self.x[3]
+        x1 = self.x[0] - w/2.0
+        y1 = self.x[1] - h/2.0
+        x2 = self.x[0] + w/2.0
+        y2 = self.x[1] + h/2.0
+        return np.array([x1, y1, x2, y2])
+    
+    def predict(self):
+        """Predict the next state using Kalman filter"""
+        # Predict step
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        
+        self.age += 1
+        if self.time_since_update > 0:
+            self.hit_streak = 0
+        self.time_since_update += 1
+        return self.state_to_bbox()
+    
+    def update(self, bbox, gaze_data=None):
+        """Update the Kalman filter with a new detection"""
+        self.time_since_update = 0
+        self.hits += 1
+        self.hit_streak += 1
+        
+        # Convert bbox to measurement
+        self.bbox_to_state(bbox)
+        z = self.state_vec
+        
+        # Update step
+        y = z - self.H @ self.x  # Innovation
+        S = self.H @ self.P @ self.H.T + self.R  # Innovation covariance
+        K = self.P @ self.H.T @ np.linalg.inv(S)  # Kalman gain
+        
+        self.x = self.x + K @ y
+        self.P = (np.eye(8) - K @ self.H) @ self.P
+        
+        # Update gaze data with configurable smoothing
+        if gaze_data:
+            alpha = self.gaze_smoothing  # Use configurable smoothing factor
+            self.gaze_data['pitch'] = alpha * gaze_data['pitch'] + (1-alpha) * self.gaze_data['pitch']
+            self.gaze_data['yaw'] = alpha * gaze_data['yaw'] + (1-alpha) * self.gaze_data['yaw']
+            self.gaze_data['score'] = gaze_data['score']  # Use latest score
+    
+    def get_state(self):
+        """Get current bounding box and gaze data"""
+        return self.state_to_bbox(), self.gaze_data
+
+class GazeTracker:
+    """Multi-object tracker for gaze detections using Kalman filters"""
+    
+    def __init__(self, max_disappeared=20, max_distance=80, min_hits=3, gaze_smoothing=0.7, 
+                 initial_hits=1, initial_hit_streak=1, initial_age=1):
+        self.max_disappeared = max_disappeared
+        self.max_distance = max_distance
+        self.min_hits = min_hits
+        self.gaze_smoothing = gaze_smoothing
+        self.initial_hits = initial_hits
+        self.initial_hit_streak = initial_hit_streak
+        self.initial_age = initial_age
+        self.trackers = []
+        
+    def update(self, detections):
+        """
+        Update tracker with new detections
+        detections: list of {'bbox': [x1,y1,x2,y2], 'pitch': float, 'yaw': float, 'score': float}
+        """
+        # Predict all existing trackers
+        predicted_bboxes = []
+        for tracker in self.trackers:
+            predicted_bboxes.append(tracker.predict())
+        
+        # If no detections, return existing trackers
+        if len(detections) == 0:
+            # Remove old trackers
+            self.trackers = [t for t in self.trackers if t.time_since_update < self.max_disappeared]
+            return self.get_current_tracks()
+        
+        # If no existing trackers, create new ones
+        if len(self.trackers) == 0:
+            for det in detections:
+                self.trackers.append(KalmanBoxTracker(det['bbox'], {
+                    'pitch': det['pitch'],
+                    'yaw': det['yaw'], 
+                    'score': det['score']
+                }, self.gaze_smoothing, self.initial_hits, self.initial_hit_streak, self.initial_age))
+            return self.get_current_tracks()
+        
+        # Associate detections to trackers using Hungarian algorithm
+        detection_centers = np.array([[
+            (det['bbox'][0] + det['bbox'][2])/2,
+            (det['bbox'][1] + det['bbox'][3])/2
+        ] for det in detections])
+        
+        tracker_centers = np.array([[
+            (bbox[0] + bbox[2])/2,
+            (bbox[1] + bbox[3])/2
+        ] for bbox in predicted_bboxes])
+        
+        # Calculate distance matrix
+        if len(tracker_centers) > 0 and len(detection_centers) > 0:
+            distance_matrix = cdist(detection_centers, tracker_centers)
+            
+            # Use Hungarian algorithm for optimal assignment
+            det_indices, track_indices = linear_sum_assignment(distance_matrix)
+            
+            # Filter out assignments with distance > max_distance
+            valid_assignments = []
+            for det_idx, track_idx in zip(det_indices, track_indices):
+                if distance_matrix[det_idx, track_idx] <= self.max_distance:
+                    valid_assignments.append((det_idx, track_idx))
+            
+            # Update matched trackers
+            unmatched_detections = set(range(len(detections)))
+            unmatched_trackers = set(range(len(self.trackers)))
+            
+            for det_idx, track_idx in valid_assignments:
+                self.trackers[track_idx].update(detections[det_idx]['bbox'], {
+                    'pitch': detections[det_idx]['pitch'],
+                    'yaw': detections[det_idx]['yaw'],
+                    'score': detections[det_idx]['score']
+                })
+                unmatched_detections.discard(det_idx)
+                unmatched_trackers.discard(track_idx)
+            
+            # Create new trackers for unmatched detections
+            for det_idx in unmatched_detections:
+                det = detections[det_idx]
+                self.trackers.append(KalmanBoxTracker(det['bbox'], {
+                    'pitch': det['pitch'],
+                    'yaw': det['yaw'],
+                    'score': det['score']
+                }, self.gaze_smoothing, self.initial_hits, self.initial_hit_streak, self.initial_age))
+        
+        # Remove old trackers
+        self.trackers = [t for t in self.trackers if t.time_since_update < self.max_disappeared]
+        
+        return self.get_current_tracks()
+    
+    def get_current_tracks(self):
+        """Get current tracks with persistent IDs"""
+        tracks = []
+        for tracker in self.trackers:
+            if tracker.time_since_update < 1 and tracker.hits >= self.min_hits:  # Use configurable min hits
+                bbox, gaze_data = tracker.get_state()
+                tracks.append({
+                    'id': tracker.id,
+                    'bbox': bbox,
+                    'pitch': gaze_data['pitch'],
+                    'yaw': gaze_data['yaw'],
+                    'score': gaze_data['score']
+                })
+        return tracks
 
 ## Extra visualisation function for id tracking here
-def get_gaze_messages_and_vis_render_msg(gaze_data, rgb_frame):
+def get_gaze_messages_and_vis_render_msg(tracked_objects, rgb_frame):
     """
-    Convert the gaze data and rendered frame to ROS messages
-    specifically, the gaze data is converted to a GazeFrame message containing GazeDetection array
+    Convert tracked gaze objects and rendered frame to ROS messages
+    specifically, the tracked data is converted to a GazeFrame message containing GazeDetection array
     and the rgb_frame is the image with bounding boxes and gaze directions drawn on it
 
     ---GazeFrame message structure:
@@ -30,7 +259,7 @@ def get_gaze_messages_and_vis_render_msg(gaze_data, rgb_frame):
     float64 yaw
     float64 pitch
     """
-    if rgb_frame is None or gaze_data is None:
+    if rgb_frame is None or not tracked_objects:
         return None, None
 
     # Create a copy of the frame for rendering
@@ -41,45 +270,68 @@ def get_gaze_messages_and_vis_render_msg(gaze_data, rgb_frame):
     gaze_frame_msg.header.stamp = rclpy.time.Time().to_msg()
     gaze_frame_msg.header.frame_id = "camera_frame"
     
-    # Create individual GazeDetection messages for each detected face
+    # Create individual GazeDetection messages for each tracked object
     gaze_detections = []
     
-    for i, (bbox, pitch, yaw, score) in enumerate(zip(gaze_data['bboxes'], gaze_data['pitch'], gaze_data['yaw'], gaze_data['scores'])):
+    # Use different colors for different IDs
+    colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+    
+    for obj in tracked_objects:
         # Create GazeDetection message
         gaze_detection = GazeDetection()
         gaze_detection.header.stamp = gaze_frame_msg.header.stamp
         gaze_detection.header.frame_id = "camera_frame"
-        gaze_detection.id = i  # Assign a unique ID to each detected face
-        gaze_detection.pitch = float(pitch)
-        gaze_detection.yaw = float(yaw)
+        gaze_detection.id = obj['id']  # Use persistent tracked ID
+        gaze_detection.pitch = float(obj['pitch'])
+        gaze_detection.yaw = float(obj['yaw'])
         
         gaze_detections.append(gaze_detection)
         
         # Render the gaze detection on the RGB frame
+        bbox = obj['bbox']
         x_min = int(bbox[0])
         y_min = int(bbox[1])
         x_max = int(bbox[2])
         y_max = int(bbox[3])
         
-        # Draw bounding box
-        cv2.rectangle(rendered_frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+        # Use different color for each ID
+        color = colors[(obj['id'] - 1) % len(colors)]
         
-        # # Draw gaze direction arrow (simple visualization)
-        # center_x = (x_min + x_max) // 2
-        # center_y = (y_min + y_max) // 2
+        # Draw bounding box with ID-specific color
+        cv2.rectangle(rendered_frame, (x_min, y_min), (x_max, y_max), color, 3)
         
-        # # Calculate arrow endpoint based on pitch and yaw (simplified)
-        # import math
-        # arrow_length = 50
-        # end_x = int(center_x + arrow_length * math.sin(yaw))
-        # end_y = int(center_y - arrow_length * math.sin(pitch))
+        # Draw gaze direction arrow
+        center_x = (x_min + x_max) // 2
+        center_y = (y_min + y_max) // 2
         
-        # cv2.arrowedLine(rendered_frame, (center_x, center_y), (end_x, end_y), (0, 0, 255), 3)
+        # Calculate arrow endpoint based on pitch and yaw (matching original draw_gaze function)
+        import math
+        arrow_length = 60
+        pitch = obj['pitch']
+        yaw = obj['yaw']
         
-        # Add text labels
-        label_text = f'ID: {i} | P: {pitch:.2f} | Y: {yaw:.2f} | S: {score:.2f}'
-        cv2.putText(rendered_frame, label_text, (x_min, y_min - 10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        # Match the original draw_gaze calculation:
+        # dx = -length * sin(pitch) * cos(yaw)
+        # dy = -length * sin(yaw)
+        dx = -arrow_length * math.sin(pitch) * math.cos(yaw)
+        dy = -arrow_length * math.sin(yaw)
+        
+        end_x = int(center_x + dx)
+        end_y = int(center_y + dy)
+        
+        cv2.arrowedLine(rendered_frame, (center_x, center_y), (end_x, end_y), color, 4)
+        
+        # Add text labels with ID-specific background
+        label_text = f"ID:{obj['id']} P:{obj['pitch']:.1f} Y:{obj['yaw']:.1f}"
+        
+        # Draw background rectangle for text
+        (text_width, text_height), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(rendered_frame, (x_min, y_min - text_height - 10), 
+                     (x_min + text_width, y_min), color, -1)
+        
+        # Draw text
+        cv2.putText(rendered_frame, label_text, (x_min, y_min - 5), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     # Add the detections to the main message
     gaze_frame_msg.gazes = gaze_detections
@@ -98,6 +350,17 @@ class GazeTrackingNode(Node):
         self.declare_parameter('device', 'cuda')
         self.declare_parameter('backbone_architecture', 'ResNet50')
         self.declare_parameter('publish_rate', 25.0)  # Default 25 FPS publishing
+        
+        # Kalman filter tracking parameters
+        self.declare_parameter('tracker_max_disappeared', 20)  # Frames to keep track without detection
+        self.declare_parameter('tracker_max_distance', 80.0)   # Maximum pixel distance for association
+        self.declare_parameter('tracker_min_hits', 3)          # Minimum hits before showing track
+        self.declare_parameter('tracker_gaze_smoothing', 0.7)  # Gaze smoothing factor (0-1)
+        
+        # Tracker initialization parameters
+        self.declare_parameter('tracker_initial_hits', 1)       # Initial hit count for new trackers
+        self.declare_parameter('tracker_initial_hit_streak', 1) # Initial hit streak for new trackers
+        self.declare_parameter('tracker_initial_age', 1)        # Initial age for new trackers
 
         # Get parameter values
         self.camera_number = self.get_parameter('camera_number').get_parameter_value().integer_value
@@ -108,6 +371,17 @@ class GazeTrackingNode(Node):
         self.backbone_architecture = self.get_parameter('backbone_architecture').get_parameter_value().string_value
         self.publish_rate = self.get_parameter('publish_rate').get_parameter_value().double_value
         
+        # Get tracking parameters
+        self.tracker_max_disappeared = self.get_parameter('tracker_max_disappeared').get_parameter_value().integer_value
+        self.tracker_max_distance = self.get_parameter('tracker_max_distance').get_parameter_value().double_value
+        self.tracker_min_hits = self.get_parameter('tracker_min_hits').get_parameter_value().integer_value
+        self.tracker_gaze_smoothing = self.get_parameter('tracker_gaze_smoothing').get_parameter_value().double_value
+        
+        # Get tracker initialization parameters
+        self.tracker_initial_hits = self.get_parameter('tracker_initial_hits').get_parameter_value().integer_value
+        self.tracker_initial_hit_streak = self.get_parameter('tracker_initial_hit_streak').get_parameter_value().integer_value
+        self.tracker_initial_age = self.get_parameter('tracker_initial_age').get_parameter_value().integer_value
+        
         # Log the parameters
         self.get_logger().info(f'Camera number: {self.camera_number}')
         self.get_logger().info(f'Visualization topic: {self.visualisation_topic}')
@@ -116,12 +390,30 @@ class GazeTrackingNode(Node):
         self.get_logger().info(f'Device: {self.device}')
         self.get_logger().info(f'Backbone architecture: {self.backbone_architecture}')
         self.get_logger().info(f'Publish rate: {self.publish_rate} Hz')
+        self.get_logger().info(f'Tracker max disappeared: {self.tracker_max_disappeared} frames')
+        self.get_logger().info(f'Tracker max distance: {self.tracker_max_distance} pixels')
+        self.get_logger().info(f'Tracker min hits: {self.tracker_min_hits}')
+        self.get_logger().info(f'Gaze smoothing factor: {self.tracker_gaze_smoothing}')
+        self.get_logger().info(f'Tracker initial hits: {self.tracker_initial_hits}')
+        self.get_logger().info(f'Tracker initial hit streak: {self.tracker_initial_hit_streak}')
+        self.get_logger().info(f'Tracker initial age: {self.tracker_initial_age}')
         
         # Thread-safe variables for sharing data between threads
         self.frame_lock = threading.Lock()
         self.latest_vis_frame = None
         self.latest_gaze_msg = None  # Store the processed GazeFrame message
         self.running = True
+        
+        # Initialize Kalman filter tracker with ROS parameters
+        self.tracker = GazeTracker(
+            max_disappeared=self.tracker_max_disappeared,
+            max_distance=self.tracker_max_distance,
+            min_hits=self.tracker_min_hits,
+            gaze_smoothing=self.tracker_gaze_smoothing,
+            initial_hits=self.tracker_initial_hits,
+            initial_hit_streak=self.tracker_initial_hit_streak,
+            initial_age=self.tracker_initial_age
+        )
         
         # Initialize gaze tracking components
         self.setup_gaze_tracking()
@@ -198,27 +490,35 @@ class GazeTrackingNode(Node):
                     gaze_msg = None
                     vframe = None
                     
+                    # Prepare detections for tracking
+                    detections = []
+                    base_frame = frame  # Use original frame for rendering
+                    
                     if g_success:
                         try:
                             results = self.Gaze_detector.get_latest_gaze_results()
-                            gaze_data = {
-                                'bboxes': results.bboxes,
-                                'pitch': results.pitch,
-                                'yaw': results.yaw,
-                                'scores': results.scores
-                            }
                             
-                            # Get the base visualization frame and process it
-                            base_frame = self.Gaze_detector.draw_gaze_window()
-                            gaze_msg, vframe = get_gaze_messages_and_vis_render_msg(gaze_data, base_frame)
-                            
+                            # Convert L2CS results to detection format for tracker
+                            for bbox, pitch, yaw, score in zip(results.bboxes, results.pitch, results.yaw, results.scores):
+                                detections.append({
+                                    'bbox': bbox,
+                                    'pitch': pitch,
+                                    'yaw': yaw,
+                                    'score': score
+                                })
+                                
                         except Exception as e:
                             self.get_logger().debug(f"Could not process gaze results: {e}")
-                            # Fallback to basic visualization
-                            vframe = self.Gaze_detector.draw_gaze_window()
+                    
+                    # Update tracker with detections (empty list if no detections)
+                    tracked_objects = self.tracker.update(detections)
+                    
+                    # Create ROS messages and visualization
+                    if tracked_objects:
+                        gaze_msg, vframe = get_gaze_messages_and_vis_render_msg(tracked_objects, base_frame)
                     else:
-                        # No detection, just get the basic frame
-                        vframe = self.Gaze_detector.draw_gaze_window()
+                        gaze_msg = None
+                        vframe = base_frame
                     
                     # Thread-safe update of shared data
                     with self.frame_lock:

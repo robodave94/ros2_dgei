@@ -1,0 +1,48 @@
+<launch>
+
+    <!-- Gaze Tracking Node Parameters -->
+    <arg name="camera_number" default="0" />
+    <arg name="visualisation_topic" default="/gaze/vis_frame" />
+    <arg name="data_publishing_topic" default="/gaze/data" />
+    <arg name="model_path" default="/home/vscode/dev/gaze_ws/src/ros2_dgei/l2cs_net/weights/L2CSNet_gaze360.pkl" />
+    <arg name="device" default="cuda" />
+    <arg name="backbone_architecture" default="ResNet50" />
+    <arg name="publish_rate" default="25.0" />
+    
+    <!-- Kalman Filter Tracking Parameters -->
+    <arg name="tracker_max_disappeared" default="20" />
+    <arg name="tracker_max_distance" default="80.0" />
+    <arg name="tracker_min_hits" default="3" />
+    <arg name="tracker_gaze_smoothing" default="0.7" />
+    
+    <!-- Tracker Initialization Parameters -->
+    <arg name="tracker_initial_hits" default="1" />
+    <arg name="tracker_initial_hit_streak" default="1" />
+    <arg name="tracker_initial_age" default="1" />
+
+    <!-- Launch the gaze tracking node from l2cs_net package -->
+    <node pkg="l2cs_net" exec="run_gaze_tracking" name="gaze_tracking_node" output="screen">
+
+        <!-- Basic Configuration Parameters -->
+        <param name="camera_number" type="int" value="$(var camera_number)" />
+        <param name="visualisation_topic" type="str" value="$(var visualisation_topic)" />
+        <param name="data_publishing_topic" type="str" value="$(var data_publishing_topic)" />
+        <param name="model_path" type="str" value="$(var model_path)" />
+        <param name="device" type="str" value="$(var device)" />
+        <param name="backbone_architecture" type="str" value="$(var backbone_architecture)" />
+        <param name="publish_rate" value="$(var publish_rate)" />
+        
+        <!-- Kalman Filter Tracking Parameters -->
+        <param name="tracker_max_disappeared" type="int" value="$(var tracker_max_disappeared)" />
+        <param name="tracker_max_distance" value="$(var tracker_max_distance)" />
+        <param name="tracker_min_hits" type="int" value="$(var tracker_min_hits)" />
+        <param name="tracker_gaze_smoothing" value="$(var tracker_gaze_smoothing)" />
+        
+        <!-- Tracker Initialization Parameters -->
+        <param name="tracker_initial_hits" type="int" value="$(var tracker_initial_hits)" />
+        <param name="tracker_initial_hit_streak" type="int" value="$(var tracker_initial_hit_streak)" />
+        <param name="tracker_initial_age" type="int" value="$(var tracker_initial_age)" />
+
+    </node>
+
+</launch>
