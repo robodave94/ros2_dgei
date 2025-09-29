@@ -1,0 +1,7 @@
+# Request
+float32 calibration_time    # Calibration time in seconds
+int32 frames_required       # Number of frames required
+float32 angle_tolerance     # Angle tolerance in degrees
+---
+# Response
+bool success                # Boolean indicating success/failure
