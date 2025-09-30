@@ -14,6 +14,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GazeDetection.msg"
   "msg/GazeFrame.msg"
+  "srv/EntropyCalculation.srv"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 

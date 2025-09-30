@@ -284,6 +284,10 @@ def get_gaze_messages_and_vis_render_msg(tracked_objects, rgb_frame):
         gaze_detection.id = obj['id']  # Use persistent tracked ID
         gaze_detection.pitch = float(obj['pitch'])
         gaze_detection.yaw = float(obj['yaw'])
+        gaze_detection.bounding_box_x = float(bbox[0])
+        gaze_detection.bounding_box_y = float(bbox[1])
+        gaze_detection.bounding_box_width = float(bbox[2] - bbox[0])
+        gaze_detection.bounding_box_height = float(bbox[3] - bbox[1])
         
         gaze_detections.append(gaze_detection)
         
