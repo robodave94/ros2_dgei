@@ -17,10 +17,9 @@ import numpy as np
 from time import time, sleep
 from collections import deque
 
-
 class EntropyGazeNode(Node):
     def __init__(self):
-        super().__init__('run_gaze_tracking')
+        super().__init__('entropy_based_gaze_tracking')
         
         # Initialize CV Bridge for image conversion
         self.bridge = CvBridge()
@@ -100,86 +99,3 @@ class EntropyGazeNode(Node):
         # Generate and publish entropy visualization if we have both image and gaze data
         if self.latest_image is not None:
             self.publish_entropy_visualization()
-    
-    def publish_entropy_visualization(self):
-        """Create and publish entropy visualization image"""
-        try:
-            if self.latest_image is None or self.latest_gaze_data is None:
-                return
-            
-            # Create a copy of the latest image for visualization
-            viz_image = self.latest_image.copy()
-            
-            # Add gaze information overlay
-            height, width = viz_image.shape[:2]
-            
-            # Add text overlays with gaze information
-            cv2.putText(viz_image, f'Pitch: {self.latest_gaze_data.pitch:.2f}', 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(viz_image, f'Yaw: {self.latest_gaze_data.yaw:.2f}', 
-                       (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # Add calibration parameters
-            cv2.putText(viz_image, f'Cal Time: {self.calibration_time}s', 
-                       (10, height-90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 2)
-            cv2.putText(viz_image, f'Frames: {self.frames_required}', 
-                       (10, height-60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 2)
-            cv2.putText(viz_image, f'Tolerance: {self.deg_angle_tolerance}°', 
-                       (10, height-30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 2)
-            
-            # Convert back to ROS Image message and publish
-            viz_msg = self.bridge.cv2_to_imgmsg(viz_image, "bgr8")
-            viz_msg.header.stamp = self.get_clock().now().to_msg()
-            self.entropy_viz_publisher.publish(viz_msg)
-            
-        except Exception as e:
-            self.get_logger().error(f'Error creating entropy visualization: {str(e)}')
-    
-    def entropy_calculation_callback(self, request, response):
-        """Service callback for entropy calculation"""
-        try:
-            # Update calibration parameters from service request
-            self.calibration_time = request.calibration_time
-            self.frames_required = request.frames_required
-            self.deg_angle_tolerance = request.deg_angle_tolerance
-            
-            self.get_logger().info(f'Entropy calculation requested with parameters:')
-            self.get_logger().info(f'  Calibration time: {self.calibration_time} seconds')
-            self.get_logger().info(f'  Frames required: {self.frames_required}')
-            self.get_logger().info(f'  Angle tolerance: {self.deg_angle_tolerance} degrees')
-            
-            # Here you would implement the actual entropy calculation logic
-            # For now, we'll return success if we have valid parameters
-            if (self.calibration_time > 0 and 
-                self.frames_required > 0 and 
-                self.deg_angle_tolerance > 0):
-                response.success = True
-                self.get_logger().info('Entropy calculation completed successfully')
-            else:
-                response.success = False
-                self.get_logger().warn('Invalid parameters for entropy calculation')
-                
-        except Exception as e:
-            self.get_logger().error(f'Error in entropy calculation: {str(e)}')
-            response.success = False
-        
-        return response
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    
-    try:
-        gaze_node = EntropyGazeNode()
-        rclpy.spin(gaze_node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        gaze_node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-
-

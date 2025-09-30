@@ -277,6 +277,10 @@ def get_gaze_messages_and_vis_render_msg(tracked_objects, rgb_frame):
     colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
     
     for obj in tracked_objects:
+
+        # Set bounding box
+        bbox = obj['bbox']
+
         # Create GazeDetection message
         gaze_detection = GazeDetection()
         gaze_detection.header.stamp = gaze_frame_msg.header.stamp
@@ -291,8 +295,7 @@ def get_gaze_messages_and_vis_render_msg(tracked_objects, rgb_frame):
         
         gaze_detections.append(gaze_detection)
         
-        # Render the gaze detection on the RGB frame
-        bbox = obj['bbox']
+        # Draw bounding box
         x_min = int(bbox[0])
         y_min = int(bbox[1])
         x_max = int(bbox[2])
