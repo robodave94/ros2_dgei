@@ -267,7 +267,7 @@ def get_gaze_messages_and_vis_render_msg(tracked_objects, rgb_frame):
     
     # Create the main GazeFrame message
     gaze_frame_msg = GazeFrame()
-    gaze_frame_msg.header.stamp = rclpy.time.Time().to_msg()
+    gaze_frame_msg.header.stamp = rclpy.clock.Clock().now().to_msg()
     gaze_frame_msg.header.frame_id = "camera_frame"
     
     # Create individual GazeDetection messages for each tracked object
@@ -555,9 +555,13 @@ class GazeTrackingNode(Node):
                 vis_frame = self.latest_vis_frame
                 raw_frame = self.latest_raw_frame
                 gaze_msg = self.latest_gaze_msg
-            
+
+            header_stamp = rclpy.clock.Clock().now().to_msg()
+
             # Publish gaze data message if available
             if gaze_msg is not None:
+                gaze_msg.header.stamp = header_stamp
+                gaze_msg.header.frame_id = f"gaze_data_{header_stamp.sec}_{header_stamp.nanosec}"
                 self.gaze_data_publisher.publish(gaze_msg)
                 
                 # Log detection info occasionally
@@ -571,11 +575,17 @@ class GazeTrackingNode(Node):
             # Publish visualization frame if available
             if vis_frame is not None and isinstance(vis_frame, np.ndarray):
                 ros_image = self.bridge.cv2_to_imgmsg(vis_frame, encoding="bgr8")
+                #set the ros_image header timestamp to the gaze_msg timestamp if available
+                ros_image.header.stamp = gaze_msg.header.stamp
+                ros_image.header.frame_id = f"gaze_vis_frame_{header_stamp.sec}_{header_stamp.nanosec}"
                 self.rgb_publisher.publish(ros_image)
             
             # Publish raw image frame if available
             if raw_frame is not None and isinstance(raw_frame, np.ndarray):
                 raw_ros_image = self.bridge.cv2_to_imgmsg(raw_frame, encoding="bgr8")
+                #Set the raw_ros_image header timestamp to the gaze_msg timestamp if available
+                raw_ros_image.header.stamp = gaze_msg.header.stamp
+                raw_ros_image.header.frame_id = f"gaze_raw_frame_{header_stamp.sec}_{header_stamp.nanosec}"
                 self.raw_image_publisher.publish(raw_ros_image)
                     
         except Exception as e:

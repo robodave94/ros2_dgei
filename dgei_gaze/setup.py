@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'dgei_attention_tracking = dgei_gaze.dgei_gaze_tracker:main',
         ],
     },
 )
