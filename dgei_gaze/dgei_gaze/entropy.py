@@ -15,13 +15,6 @@ class AttentionDetector:
                  yaw_threshold=20,         # Maximum yaw angle for attention
                  history_size=10):         # Number of frames to keep for smoothing
         
-        # Initialize the gaze detector
-        self.gaze_detector = Gaze_Detector(
-            device='cuda',
-            nn_arch='ResNet50',
-            weights_pth='/home/vscode/dev/gaze_ws/src/ros2_dgei/l2cs_net/weights/L2CSNet_gaze360.pkl'
-        )
-
         # Initialize parameters
         self.attention_threshold = attention_threshold
         self.pitch_threshold = pitch_threshold
@@ -285,3 +278,64 @@ def calculate_attention_metrics(attention_window, interval_duration=5.0):
     }
 
 
+def attention_detection_loop(self):
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(self.camera_id)
+        
+        # Initialize camera and detector with calibration
+        self.detector = CalibratedAttentionDetector(self.calibrator)
+        
+        self.is_in_attention_detection_mode = True
+        
+        
+        self.attention_window = []
+        
+        while self.cap.isOpened() and self.is_in_attention_detection_mode:
+            success, frame = self.cap.read()
+            if not success:
+                print("Failed to read frame. Stopping attention detection.")
+                break
+                
+            # print("Processing frame")
+            # Process frame
+            frame, attention, sustained, angles, face_found = self.detector.process_frame(frame)
+            
+            # Update attention window
+            current_time = time()
+            self.attention_window.append((current_time, attention))
+            
+            # Calculate metrics
+            metrics = calculate_attention_metrics(self.attention_window)
+            
+            self.gaze_score_lock.acquire()
+            self.gaze_score = metrics["gaze_score"]
+            self.gaze_score_lock.release()
+            
+            self.robot_looks_lock.acquire()
+            self.robot_looks = metrics["robot_looks"]
+            self.robot_looks_lock.release()
+            
+            self.gaze_entropy_lock.acquire()
+            self.gaze_entropy = metrics["gaze_entropy"]
+            self.gaze_entropy_lock.release()
+            
+            # Add metrics and calibration values to display
+            if face_found:
+                h, w, _ = frame.shape
+                # Add calibration values
+                cv2.putText(frame, f'Baseline Pitch: {self.calibrator.baseline_pitch:.1f}', 
+                        (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+                cv2.putText(frame, f'Baseline Yaw: {self.calibrator.baseline_yaw:.1f}', 
+                        (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+                
+                # Add metrics
+                cv2.putText(frame, f'Attention Ratio: {metrics["attention_ratio"]:.2f}', 
+                        (20, h - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+                cv2.putText(frame, f'Gaze Entropy: {metrics["gaze_entropy"]:.2f}', 
+                        (20, h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+                cv2.putText(frame, f'Frames in Window: {metrics["frames_in_interval"]}', 
+                        (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+                
+                self.gaze_score_lock.acquire()
+                self.visualisation_frame = frame
+                self.gaze_score_lock.release()
