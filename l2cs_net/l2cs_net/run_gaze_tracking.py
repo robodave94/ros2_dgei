@@ -532,7 +532,7 @@ class GazeTrackingNode(Node):
                     if tracked_objects:
                         gaze_msg, vframe = get_gaze_messages_and_vis_render_msg(tracked_objects, base_frame)
                     else:
-                        gaze_msg = None
+                        gaze_msg = GazeFrame()
                         vframe = base_frame
                     
                     # Thread-safe update of shared data

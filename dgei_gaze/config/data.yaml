@@ -1,4 +1,4 @@
-BaselinePitch: 0
-BaselineYaw: 0
-PitchThreshold: 0
-YawThreshold: 0
+BaselinePitch: 0.5
+BaselineYaw: 15.0
+PitchThreshold: 20.0
+YawThreshold: 10.0

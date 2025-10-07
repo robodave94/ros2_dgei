@@ -11,6 +11,7 @@ from cv_bridge import CvBridge
 from dgei_gaze.data import read_gaze_config
 
 from l2cs.gaze_detectors import Gaze_Detector
+from dgei_gaze.entropy import AttentionTracker, AttentionTrackerCollection
 
 from threading import Thread
 
@@ -20,6 +21,65 @@ import cv2
 import numpy as np
 from time import time, sleep
 from collections import deque
+
+def visualise_attention_entropy_on_frame(id, gaze_data_dict, gaze_msg, frame):
+    """
+    Visualize attention and entropy information on the given frame.
+
+    Gaze dict:
+    'attention_state': attention,
+    'sustained_attention': sustained_attention,
+    'smoothed_pitch': smoothed_pitch,
+    'smoothed_yaw': smoothed_yaw,
+    'original_pitch': pitch,
+    'original_yaw': yaw,
+    'gaze_score': metrics['gaze_score'],
+    'robot_looks': metrics['robot_looks'],
+    'gaze_entropy': metrics['gaze_entropy']
+
+    gaze_msg:
+    bounding_box_x 
+    bounding_box_y 
+    bounding_box_width 
+    bounding_box_height
+
+
+    Args:
+        id (int): The ID of the face/gaze detection.
+        gaze_data_dict (dict): Dictionary containing gaze data with keys 'gaze_score' and 'gaze_entropy'.
+        gaze_msg (GazeFrame): A single gaze detection message.
+        frame (np.ndarray): The image frame to draw on.
+
+        
+        
+    Draws on frames:
+        - Bounding boxes around detected faces
+        - Gaze score and entropy information
+        - robot looks
+
+    Returns:
+        np.ndarray: The image frame with visualizations.
+    """
+    # Draw bounding box
+    x = int(gaze_msg.bounding_box_x)
+    y = int(gaze_msg.bounding_box_y)
+    w = int(gaze_msg.bounding_box_width)
+    h = int(gaze_msg.bounding_box_height)
+
+    # print(f"X:{x} Y:{y} W:{w} H:{h}")
+
+    # cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+    cv2.putText(frame, f'ID:{id}', (x, y - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+    cv2.putText(frame, f'GazeScore:{gaze_data_dict["gaze_score"]:.1f}', (x, y - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+    cv2.putText(frame, f'GazeEntropy:{gaze_data_dict["gaze_entropy"]:.1f}', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+    # cv2.putText(frame, f'RobotLooks:{gaze_data_dict["robot_looks"]}', (x, y + h + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+    # cv2.putText(frame, f'Attention:{gaze_data_dict["attention_state"]}', (x, y + h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    # cv2.putText(frame, f'Sustained:{gaze_data_dict["sustained_attention"]}', (x, y + h + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    # # Place pitch and yaw on one line
+    # cv2.putText(frame, f'Pitch:{gaze_data_dict["smoothed_pitch"]:.1f} Yaw:{gaze_data_dict["smoothed_yaw"]:.1f}',
+    #              (x, y + h + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+    return frame
 
 class EntropyGazeNode(Node):
     def __init__(self):
@@ -61,7 +121,16 @@ class EntropyGazeNode(Node):
         # For backward compatibility
         self.latest_image = None
         self.latest_gaze_data = None
-        
+
+        # Initialize Attention Tracker Collection
+        self.attention_tracker_collection = AttentionTrackerCollection(
+            self.attention_config,
+            default_attention_threshold=0.5,
+            default_history_size=10,
+            auto_cleanup=True,
+            cleanup_timeout=3.0)
+            
+
         # Create subscriptions using parameter values
         self.image_subscription = self.create_subscription(
             Image,
@@ -221,20 +290,52 @@ class EntropyGazeNode(Node):
 
             if sync_image is None or sync_gaze is None:
                 self.get_logger().warn('No synchronized data available for processing')
+                self.attention_tracker_collection.manual_cleanup()
                 continue
             elif last_header_stamp == sync_gaze.header.stamp:
-                sleep(0.02)  # Sleep briefly to avoid busy-waiting
+                self.attention_tracker_collection.manual_cleanup()
+                sleep(0.01)  # Sleep briefly to avoid busy-waiting
                 continue
             else:
                 last_header_stamp = sync_gaze.header.stamp
                 # Synchronized data has already been validated in the callback, proceed to processing
-                # The attention metrics calculation would go here
+                # for loop setup the dictionaries
+                # face_detections: List of dicts with keys 'id', 'pitch', 'yaw'
+                #            e.g. [{'id': 1, 'pitch': 10.5, 'yaw': -5.2}, ...]
+                face_detections = []
+                gaze_detections = {}
+                for gaze_det in sync_gaze.gazes:
+                    # Process each gaze detection
+                    # Get face ID and gaze angles
+                    face_id = gaze_det.id
+                    pitch = math.degrees(gaze_det.pitch)
+                    yaw = math.degrees(gaze_det.yaw)
+                    gaze_detections[face_id] = gaze_det
+
+                    # setup
+                    face_detections.append({'id': face_id, 'pitch': pitch, 'yaw': yaw})
+
+                gaze_entropy_viz = sync_image.copy()
+                # Sleep briefly to avoid busy-waiting
+                if len(face_detections) > 0:
+                    results = self.attention_tracker_collection.process_frame_data(face_detections)
+                    # Fix: iterate over the dictionary items to get both face_id and result_data
+                    for face_id, result_data in results.items():
+                        # self.get_logger().info(f"Face ID {face_id}: Attention={result_data['attention_state']}, Smoothed Pitch={result_data['smoothed_pitch']:.1f}, Smoothed Yaw={result_data['smoothed_yaw']:.1f}")
+                        # Pass the face_id separately to the visualization function
+                        gaze_entropy_viz = visualise_attention_entropy_on_frame(face_id, result_data, gaze_detections[face_id], gaze_entropy_viz)
                 
-                ### make a loop that runs through every frame in the gaze data
-                for gaze_detection in sync_gaze.gazes:
-                    # Example processing: log gaze detection details
-                    self.get_logger().info(f'Processing gaze detection: ID={gaze_detection.id}, Pitch={math.degrees(gaze_detection.pitch):.2f}°, Yaw={math.degrees(gaze_detection.yaw):.2f}°')
-                 
+                # publish the visualization
+                if self.entropy_viz_publisher is not None:
+                    try:
+                        viz_msg = self.bridge.cv2_to_imgmsg(gaze_entropy_viz, encoding="bgr8")
+                        viz_msg.header = sync_gaze.header  # Preserve original header info
+                        self.entropy_viz_publisher.publish(viz_msg)
+                        # self.get_logger().info('Published entropy visualization frame')
+                    except Exception as e:
+                        self.get_logger().error(f'Error publishing entropy visualization: {str(e)}')
+
+                # sleep(0.02)
 
 def main(args=None):
     rclpy.init(args=args)

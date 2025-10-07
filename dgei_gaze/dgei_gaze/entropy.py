@@ -1,4 +1,7 @@
+#!/usr/bin/python3.10
 
+from l2cs.gaze_detectors import Gaze_Detector
+import torch
 from copy import deepcopy
 import math
 import pdb
@@ -8,189 +11,6 @@ from time import time, sleep
 from collections import deque
 from threading import Thread, Lock
 
-class AttentionDetector:
-    def __init__(self, 
-                 attention_threshold=0.5,  # Time in seconds needed to confirm attention
-                 pitch_threshold=15,       # Maximum pitch angle for attention
-                 yaw_threshold=20,         # Maximum yaw angle for attention
-                 history_size=10):         # Number of frames to keep for smoothing
-        
-        # Initialize parameters
-        self.attention_threshold = attention_threshold
-        self.pitch_threshold = pitch_threshold
-        self.yaw_threshold = yaw_threshold
-        self.attention_start_time = None
-        self.attention_state = False
-        
-        # Initialize angle history for smoothing
-        self.angle_history = deque(maxlen=history_size)
-        
-    
-    def smooth_angles(self, angles):
-        """Apply smoothing to angles using a moving average"""
-        self.angle_history.append(angles)
-        return np.mean(self.angle_history, axis=0)
-    
-    def is_looking_at_robot(self, pitch, yaw):
-        """Determine if the person is looking at the robot based on angles"""
-        return abs(pitch) < self.pitch_threshold and abs(yaw) < self.yaw_threshold
-    
-    def process_frame(self, frame):
-        # Initialize return values
-        attention_detected = False
-        sustained_attention = False
-        angles = None
-        face_found = False
-
-        """Process a single frame and return attention state and visualization"""
-        h, w, _ = frame.shape
-        
-        g_success = self.gaze_detector.detect_gaze(frame)
-
-        if g_success:
-            face_found = True
-            results = self.gaze_detector.get_latest_gaze_results()
-            if results is None:
-                return frame, attention_detected, sustained_attention, angles, face_found
-
-            # Extract pitch and yaw from results
-            pitch = results.pitch[0]
-            yaw = results.yaw[0]
-
-            angles = (math.degrees(pitch), math.degrees(yaw), 0) # Assuming roll is not used and angles are in degrees
-            
-            # Apply smoothing
-            smoothed_angles = self.smooth_angles(angles)
-            pitch, yaw, _ = smoothed_angles
-            
-            # Check if looking at robot
-            attention_detected = self.is_looking_at_robot(pitch, yaw)
-            
-            # Track sustained attention
-            current_time = time()
-            if attention_detected:
-                if self.attention_start_time is None:
-                    self.attention_start_time = current_time
-                elif (current_time - self.attention_start_time) >= self.attention_threshold:
-                    sustained_attention = True
-            else:
-                self.attention_start_time = None
-
-            frame = self.gaze_detector.draw_gaze_window()
-
-            # Visualization
-            color = (0, 255, 0) if sustained_attention else (
-                (0, 165, 255) if attention_detected else (0, 0, 255)
-            )
-            
-            # Add text overlays
-            cv2.putText(frame, f'Pitch: {int(pitch)}', (20, 20), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            cv2.putText(frame, f'Yaw: {int(yaw)}', (20, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            
-            # Draw attention status
-            status = "Sustained Attention" if sustained_attention else (
-                "Attention Detected" if attention_detected else "No Attention"
-            )
-            cv2.putText(frame, status, (20, 80), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            
-            
-                
-        return frame, attention_detected, sustained_attention, angles, face_found
-
-class AttentionCalibrator:
-    def __init__(self, 
-                 calibration_time=10.0,    # Time in seconds needed for calibration
-                 samples_needed=300,        # Number of samples to collect
-                 angle_tolerance=15.0):     # Tolerance for angle variation during calibration -- DEFAULT 15.0
-        
-        self.calibration_time = calibration_time
-        self.samples_needed = samples_needed
-        self.angle_tolerance = angle_tolerance
-        
-        # Storage for calibration samples
-        self.pitch_samples = []
-        self.yaw_samples = []
-        
-        # Calibration state
-        self.calibration_start_time = None
-        self.is_calibrated = False
-        self.baseline_pitch = None
-        self.baseline_yaw = None
-        self.pitch_threshold = None
-        self.yaw_threshold = None
-        
-    def start_calibration(self):
-        """Start the calibration process"""
-        self.calibration_start_time = time()
-        self.pitch_samples = []
-        self.yaw_samples = []
-        self.is_calibrated = False
-        print("Starting calibration... Please look directly at the robot.")
-        
-    def process_calibration_frame(self, pitch, yaw):
-        """Process a frame during calibration"""
-        if self.calibration_start_time is None:
-            return False, "Calibration not started"
-        
-        current_time = time()
-        elapsed_time = current_time - self.calibration_start_time
-        
-        # Add samples
-        self.pitch_samples.append(pitch)
-        self.yaw_samples.append(yaw)
-        
-        # Check if we have enough samples
-        if len(self.pitch_samples) >= self.samples_needed:
-            # Calculate baseline angles and thresholds
-            self.baseline_pitch = np.mean(self.pitch_samples)
-            self.baseline_yaw = np.mean(self.yaw_samples)
-            
-            # Calculate standard deviations
-            pitch_std = np.std(self.pitch_samples)
-            yaw_std = np.std(self.yaw_samples)
-            
-            # Set thresholds based on standard deviation and minimum tolerance
-            self.pitch_threshold = max(2 * pitch_std, self.angle_tolerance)
-            self.yaw_threshold = max(2 * yaw_std, self.angle_tolerance)
-            
-            self.is_calibrated = True
-            return True, "Calibration complete"
-        
-        # Still calibrating
-        return False, f"Calibrating... {len(self.pitch_samples)}/{self.samples_needed} samples"
-
-class CalibratedAttentionDetector(AttentionDetector):
-    def __init__(self, calibrator, attention_threshold=0.5, history_size=10):
-        super().__init__(
-            attention_threshold=attention_threshold,
-            pitch_threshold=None,  # Will be set by calibrator
-            yaw_threshold=None,    # Will be set by calibrator
-            history_size=history_size
-        )
-        
-        # Store calibrator
-        self.calibrator = calibrator
-        
-        # Set thresholds from calibrator
-        if calibrator.is_calibrated:
-            self.pitch_threshold = calibrator.pitch_threshold
-            self.yaw_threshold = calibrator.yaw_threshold
-            self.baseline_pitch = calibrator.baseline_pitch
-            self.baseline_yaw = calibrator.baseline_yaw
-    
-    def is_looking_at_robot(self, pitch, yaw):
-        """Override the original method to use calibrated values"""
-        if not self.calibrator.is_calibrated:
-            return False
-            
-        # Calculate angle differences from baseline
-        pitch_diff = abs(pitch - self.calibrator.baseline_pitch)
-        yaw_diff = abs(yaw - self.calibrator.baseline_yaw)
-        
-        return pitch_diff < self.calibrator.pitch_threshold and yaw_diff < self.calibrator.yaw_threshold
 
 def calculate_attention_metrics(attention_window, interval_duration=5.0):
     """
@@ -278,64 +98,320 @@ def calculate_attention_metrics(attention_window, interval_duration=5.0):
     }
 
 
-def attention_detection_loop(self):
-        if not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(self.camera_id)
+
+# Everything in this file is in degrees, please ensure inputs are converted if necessary
+
+class AttentionTracker:
+    def __init__(self,
+                 face_id,
+                 attention_threshold=0.5,  # Time in seconds needed to confirm attention
+                 history_size=10,         # Number of frames to keep for smoothing)
+                 # Calibration baselines (assumed to be looking at robot)
+                 cal_dict = {}):
+        # Initialize parameters
+        self.face_id = face_id
+        self.attention_threshold = attention_threshold
+        # self.pitch_threshold = pitch_threshold
+        # self.yaw_threshold = yaw_threshold
+
+        self.update_calibration_parameters(cal_dict)
+
+        self.attention_start_time = None
+        self.attention_state = False
+
+        # Initialize angle history for smoothing
+        self.angle_history = deque(maxlen=history_size)
+
+        self.attention_window = []  # List of (timestamp, attention_state) tuples
         
-        # Initialize camera and detector with calibration
-        self.detector = CalibratedAttentionDetector(self.calibrator)
+    def append_to_attention_window(self, current_time, attention):
+        self.attention_window.append((current_time, attention))
+
+        # Limit the size of the attention window to the last 1000 entries
+        if len(self.attention_window) > 1000:
+            self.attention_window = self.attention_window[-1000:]
+
+
+    def get_attention_window(self):
+        return self.attention_window
+
+    def update_calibration_parameters(self, cal_dict):
+        # Calibration parameters
+        if 'BaselinePitch' in cal_dict:
+            self.cal_baseline_pitch = cal_dict['BaselinePitch']
+        else:
+            raise ValueError("Calibration dictionary must contain 'BaselinePitch'")
+
+        if 'BaselineYaw' in cal_dict:
+            self.cal_baseline_yaw = cal_dict['BaselineYaw']
+        else:
+            raise ValueError("Calibration dictionary must contain 'BaselineYaw'")
+
+        if 'PitchThreshold' in cal_dict:
+            self.cal_pitch_threshold = cal_dict['PitchThreshold']
+        else:
+            raise ValueError("Calibration dictionary must contain 'PitchThreshold'")
+
+        if 'YawThreshold' in cal_dict:
+            self.cal_yaw_threshold = cal_dict['YawThreshold']
+        else:
+            raise ValueError("Calibration dictionary must contain 'YawThreshold'")
+
+        return True
+
+    def get_track_id(self):
+        """Return the face ID being tracked"""
+        return self.face_id
+
+    def smooth_angles(self, angles):
+        """Apply smoothing to angles using a moving average"""
+        self.angle_history.append(angles)
+        return np.mean(self.angle_history, axis=0)
+    
+    def is_looking_at_robot(self, pitch, yaw):
+        """Determine if the person is looking at the robot based on angles"""
+        # Calculate angle differences from baseline
+        pitch_diff = abs(pitch - self.cal_baseline_pitch)
+        yaw_diff = abs(yaw - self.cal_baseline_yaw)
+
+        return pitch_diff < self.cal_pitch_threshold and yaw_diff < self.cal_yaw_threshold
+
+    def process_angle_frame_update(self, pitch, yaw):
+        """Process a new frame of pitch and yaw angles"""
+        smoothed_pitch, smoothed_yaw = self.smooth_angles((pitch, yaw))
+
+        current_time = time()
+        attention = self.is_looking_at_robot(smoothed_pitch, smoothed_yaw)
+        if attention:
+            if self.attention_start_time is None:
+                self.attention_start_time = current_time
+            elif (current_time - self.attention_start_time) >= self.attention_threshold:
+                self.attention_state = True # Attention state is sustained_attention
+        else:
+            self.attention_start_time = None
+            self.attention_state = False # Attention state is sustained_attention
         
-        self.is_in_attention_detection_mode = True
+        # Returns attention, sustained attention state, smoothed pitch, smoothed yaw
+        return attention, self.attention_state, smoothed_pitch, smoothed_yaw
+
+class AttentionTrackerCollection:
+    """Collection class to manage multiple AttentionTracker objects"""
+    
+    def __init__(self, 
+                 calibration_dictionary,
+                 default_attention_threshold=0.5,
+                 default_history_size=10,
+                 auto_cleanup=True,
+                 cleanup_timeout=3.0):  # Remove trackers inactive for 3 seconds
+
+        self.trackers = {}  # Dictionary to store trackers by face_id
         
+        # Default parameters for new trackers
+        self.default_attention_threshold = default_attention_threshold
+        self.calibration_dictionary = calibration_dictionary
+        self.default_history_size = default_history_size
         
-        self.attention_window = []
+        # Auto cleanup settings
+        self.auto_cleanup = auto_cleanup
+        self.cleanup_timeout = cleanup_timeout
+        self.last_update_times = {}  # Track when each tracker was last used
         
-        while self.cap.isOpened() and self.is_in_attention_detection_mode:
-            success, frame = self.cap.read()
-            if not success:
-                print("Failed to read frame. Stopping attention detection.")
-                break
-                
-            # print("Processing frame")
-            # Process frame
-            frame, attention, sustained, angles, face_found = self.detector.process_frame(frame)
+        # Thread safety
+        self.lock = Lock()
+    
+    def update_calibration_dictionary(self, cal_dict):
+        """Update the calibration dictionary for all trackers"""
+        with self.lock:
+            self.calibration_dictionary = cal_dict
+            for tracker in self.trackers.values():
+                tracker.update_calibration_parameters(cal_dict)
+
+    def get_tracker(self, face_id):
+        """Get tracker by face ID, create if doesn't exist"""
+        with self.lock:
+            if face_id not in self.trackers:
+                self.trackers[face_id] = AttentionTracker(
+                    face_id=face_id,
+                    attention_threshold=self.default_attention_threshold,
+                    history_size=self.default_history_size,
+                    cal_dict=self.calibration_dictionary
+                )
+            
+            # Update last access time
+            self.last_update_times[face_id] = time()
+            return self.trackers[face_id]
+    
+    def has_tracker(self, face_id):
+        """Check if tracker exists for given face ID"""
+        with self.lock:
+            return face_id in self.trackers
+    
+    def remove_tracker(self, face_id):
+        """Remove tracker by face ID"""
+        with self.lock:
+            if face_id in self.trackers:
+                del self.trackers[face_id]
+                if face_id in self.last_update_times:
+                    del self.last_update_times[face_id]
+                return True
+            return False
+    
+    def get_all_trackers(self):
+        """Get all trackers as a dictionary {face_id: tracker}"""
+        with self.lock:
+            return dict(self.trackers)  # Return copy to avoid external modification
+    
+    def get_all_tracker_ids(self):
+        """Get list of all face IDs being tracked"""
+        with self.lock:
+            return list(self.trackers.keys())
+    
+    def get_tracker_count(self):
+        """Get number of active trackers"""
+        with self.lock:
+            return len(self.trackers)
+    
+    def process_frame_data(self, face_detections):
+        """
+        Process frame data for multiple faces
+        
+        Args:
+            face_detections: List of dicts with keys 'id', 'pitch', 'yaw'
+                           e.g. [{'id': 1, 'pitch': 10.5, 'yaw': -5.2}, ...]
+        
+        Returns:
+            dict: Results for each face {face_id: (attention_state, pitch, yaw)}
+        """
+        results = {}
+        
+        for detection in face_detections:
+            face_id = detection['id']
+            pitch = detection['pitch']
+            yaw = detection['yaw']
+            
+            # Get or create tracker
+            tracker = self.get_tracker(face_id)
+            
+            # Process the frame
+            attention, sustained_attention, smoothed_pitch, smoothed_yaw = tracker.process_angle_frame_update(pitch, yaw)
             
             # Update attention window
             current_time = time()
-            self.attention_window.append((current_time, attention))
-            
+            tracker.append_to_attention_window(current_time, attention)
+
             # Calculate metrics
-            metrics = calculate_attention_metrics(self.attention_window)
+            metrics = calculate_attention_metrics(tracker.get_attention_window())
+
+            results[face_id] = {
+                'attention_state': attention,
+                'sustained_attention': sustained_attention,
+                'smoothed_pitch': smoothed_pitch,
+                'smoothed_yaw': smoothed_yaw,
+                'original_pitch': pitch,
+                'original_yaw': yaw,
+                'gaze_score': metrics['gaze_score'],
+                'robot_looks': metrics['robot_looks'],
+                'gaze_entropy': metrics['gaze_entropy']
+            }
+        
+        # Perform cleanup if enabled
+        if self.auto_cleanup:
+            self._cleanup_inactive_trackers()
+        
+        return results
+    
+    def get_attention_states(self):
+        """Get current attention states for all trackers"""
+        with self.lock:
+            return {face_id: tracker.attention_state 
+                   for face_id, tracker in self.trackers.items()}
+    
+    def get_trackers_with_attention(self):
+        """Get list of face IDs that currently have attention"""
+        attention_states = self.get_attention_states()
+        return [face_id for face_id, has_attention in attention_states.items() if has_attention]
+    
+    def clear_all_trackers(self):
+        """Remove all trackers"""
+        with self.lock:
+            self.trackers.clear()
+            self.last_update_times.clear()
+    
+    def _cleanup_inactive_trackers(self):
+        """Remove trackers that haven't been updated recently (internal method)"""
+        current_time = time()
+        inactive_ids = []
+        
+        with self.lock:
+            for face_id, last_update in self.last_update_times.items():
+                if current_time - last_update > self.cleanup_timeout:
+                    inactive_ids.append(face_id)
             
-            self.gaze_score_lock.acquire()
-            self.gaze_score = metrics["gaze_score"]
-            self.gaze_score_lock.release()
+            # Remove inactive trackers
+            for face_id in inactive_ids:
+                if face_id in self.trackers:
+                    del self.trackers[face_id]
+                del self.last_update_times[face_id]
+    
+    def manual_cleanup(self, timeout=None):
+        """Manually trigger cleanup of inactive trackers"""
+        if timeout is None:
+            timeout = self.cleanup_timeout
             
-            self.robot_looks_lock.acquire()
-            self.robot_looks = metrics["robot_looks"]
-            self.robot_looks_lock.release()
+        current_time = time()
+        inactive_ids = []
+        
+        with self.lock:
+            for face_id, last_update in self.last_update_times.items():
+                if current_time - last_update > timeout:
+                    inactive_ids.append(face_id)
             
-            self.gaze_entropy_lock.acquire()
-            self.gaze_entropy = metrics["gaze_entropy"]
-            self.gaze_entropy_lock.release()
-            
-            # Add metrics and calibration values to display
-            if face_found:
-                h, w, _ = frame.shape
-                # Add calibration values
-                cv2.putText(frame, f'Baseline Pitch: {self.calibrator.baseline_pitch:.1f}', 
-                        (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-                cv2.putText(frame, f'Baseline Yaw: {self.calibrator.baseline_yaw:.1f}', 
-                        (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-                
-                # Add metrics
-                cv2.putText(frame, f'Attention Ratio: {metrics["attention_ratio"]:.2f}', 
-                        (20, h - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-                cv2.putText(frame, f'Gaze Entropy: {metrics["gaze_entropy"]:.2f}', 
-                        (20, h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-                cv2.putText(frame, f'Frames in Window: {metrics["frames_in_interval"]}', 
-                        (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-                
-                self.gaze_score_lock.acquire()
-                self.visualisation_frame = frame
-                self.gaze_score_lock.release()
+            # Remove inactive trackers
+            for face_id in inactive_ids:
+                if face_id in self.trackers:
+                    del self.trackers[face_id]
+                del self.last_update_times[face_id]
+        
+        return inactive_ids  # Return list of removed face IDs
+    
+    def set_default_parameters(self, **kwargs):
+        """Update default parameters for new trackers"""
+        if 'attention_threshold' in kwargs:
+            self.default_attention_threshold = kwargs['attention_threshold']
+        if 'pitch_threshold' in kwargs:
+            self.default_pitch_threshold = kwargs['pitch_threshold']
+        if 'yaw_threshold' in kwargs:
+            self.default_yaw_threshold = kwargs['yaw_threshold']
+        if 'history_size' in kwargs:
+            self.default_history_size = kwargs['history_size']
+    
+    def update_tracker_parameters(self, face_id, **kwargs):
+        """Update parameters for a specific tracker"""
+        with self.lock:
+            if face_id in self.trackers:
+                tracker = self.trackers[face_id]
+                if 'attention_threshold' in kwargs:
+                    tracker.attention_threshold = kwargs['attention_threshold']
+                if 'pitch_threshold' in kwargs:
+                    tracker.pitch_threshold = kwargs['pitch_threshold']
+                if 'yaw_threshold' in kwargs:
+                    tracker.yaw_threshold = kwargs['yaw_threshold']
+                return True
+            return False
+    
+    def __len__(self):
+        """Return number of trackers"""
+        return self.get_tracker_count()
+    
+    def __contains__(self, face_id):
+        """Check if face_id exists in collection"""
+        return self.has_tracker(face_id)
+    
+    def __getitem__(self, face_id):
+        """Get tracker by face_id using [] operator"""
+        return self.get_tracker(face_id)
+    
+    def __iter__(self):
+        """Iterate over face_ids"""
+        with self.lock:
+            return iter(list(self.trackers.keys()))
