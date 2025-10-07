@@ -13,7 +13,7 @@ from dgei_gaze.data import read_gaze_config
 from l2cs.gaze_detectors import Gaze_Detector
 from dgei_gaze.entropy import AttentionTracker, AttentionTrackerCollection
 
-from threading import Thread
+from threading import Thread, Lock
 
 import math
 import pdb
@@ -66,18 +66,63 @@ def visualise_attention_entropy_on_frame(id, gaze_data_dict, gaze_msg, frame):
     w = int(gaze_msg.bounding_box_width)
     h = int(gaze_msg.bounding_box_height)
 
-    # print(f"X:{x} Y:{y} W:{w} H:{h}")
+    # Calculate center of face for gaze arrow
+    center_x = x + w // 2
+    center_y = y + h // 2
+    
+    # Draw gaze direction arrow
+    arrow_length = 80
+    pitch_rad = math.radians(gaze_data_dict["smoothed_pitch"])
+    yaw_rad = math.radians(gaze_data_dict["smoothed_yaw"])
+    
+    # Calculate arrow endpoint (matching gaze direction calculation)
+    dx = -arrow_length * math.sin(pitch_rad) * math.cos(yaw_rad)
+    dy = -arrow_length * math.sin(yaw_rad)
+    
+    end_x = int(center_x + dx)
+    end_y = int(center_y + dy)
+    
+    # Draw gaze arrow in bright yellow
+    cv2.arrowedLine(frame, (center_x, center_y), (end_x, end_y), (0, 255, 255), 3)
+    
+    # Function to interpolate between red and green based on score (0-100)
+    def score_to_color(score):
+        # Clamp score between 0 and 100
+        score = max(0, min(100, score))
+        # Interpolate from red (0,0,255) to green (0,255,0)
+        red_component = int(255 * (100 - score) / 100)
+        green_component = int(255 * score / 100)
+        return (0, green_component, red_component)
+    
+    # Get colors based on scores
+    gaze_score_color = score_to_color(gaze_data_dict["gaze_score"])
+    # For entropy, lower is better, so invert it (higher entropy = lower score)
+    entropy_score = max(0, 100 - (gaze_data_dict["gaze_entropy"] * 50))  # Scale entropy to 0-100 range
+    entropy_color = score_to_color(entropy_score)
+    
+    # Attention colors
+    attention_color = (0, 255, 0) if gaze_data_dict["attention_state"] else (0, 0, 255)
+    sustained_color = (0, 255, 0) if gaze_data_dict["sustained_attention"] else (0, 0, 255)
 
-    # cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
-    cv2.putText(frame, f'ID:{id}', (x, y - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    cv2.putText(frame, f'GazeScore:{gaze_data_dict["gaze_score"]:.1f}', (x, y - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    cv2.putText(frame, f'GazeEntropy:{gaze_data_dict["gaze_entropy"]:.1f}', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    # cv2.putText(frame, f'RobotLooks:{gaze_data_dict["robot_looks"]}', (x, y + h + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    # cv2.putText(frame, f'Attention:{gaze_data_dict["attention_state"]}', (x, y + h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-    # cv2.putText(frame, f'Sustained:{gaze_data_dict["sustained_attention"]}', (x, y + h + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-    # # Place pitch and yaw on one line
-    # cv2.putText(frame, f'Pitch:{gaze_data_dict["smoothed_pitch"]:.1f} Yaw:{gaze_data_dict["smoothed_yaw"]:.1f}',
-    #              (x, y + h + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    # Draw bounding box
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+    
+    # Draw text with appropriate colors
+    cv2.putText(frame, f'ID:{id}', (x, y - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(frame, f'GazeScore:{gaze_data_dict["gaze_score"]:.1f}', (x, y - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, gaze_score_color, 1)
+    cv2.putText(frame, f'Entropy:{gaze_data_dict["gaze_entropy"]:.2f}', (x, y - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, entropy_color, 1)
+    cv2.putText(frame, f'RobotLooks:{gaze_data_dict["robot_looks"]}', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+
+    # Attention states with green/red colors
+    attention_text = "ATTENTION" if gaze_data_dict["attention_state"] else "No Attention"
+    cv2.putText(frame, attention_text, (x, y + h + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, attention_color, 1)
+
+    sustained_text = "SUSTAINED" if gaze_data_dict["sustained_attention"] else "Not Sustained"
+    cv2.putText(frame, sustained_text, (x, y + h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, sustained_color, 1)
+
+    # Place pitch and yaw on one line
+    cv2.putText(frame, f'P:{gaze_data_dict["smoothed_pitch"]:.1f} Y:{gaze_data_dict["smoothed_yaw"]:.1f}',
+                 (x, y + h + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     return frame
 
@@ -114,8 +159,8 @@ class EntropyGazeNode(Node):
         self.attention_config = read_gaze_config(attention_config_path)
 
         # Initialize synchronization variables
-        self.image_buffer = deque(maxlen=30)  # Store recent images with timestamps
-        self.gaze_buffer = deque(maxlen=30)   # Store recent gaze data with timestamps
+        self.image_buffer = deque(maxlen=1)  # Store recent images with timestamps
+        self.gaze_buffer = deque(maxlen=1)   # Store recent gaze data with timestamps
         self.latest_synchronized_pair = None  # Stores (image_cv, gaze_msg, sync_timestamp) tuple
         
         # For backward compatibility
@@ -130,6 +175,11 @@ class EntropyGazeNode(Node):
             auto_cleanup=True,
             cleanup_timeout=3.0)
             
+
+        # Calibration state
+        self.call_calibration = False
+        # Calibration get/set lock for multi-threading
+        self.calibration_lock = Lock()
 
         # Create subscriptions using parameter values
         self.image_subscription = self.create_subscription(
@@ -153,12 +203,12 @@ class EntropyGazeNode(Node):
             10
         )
         
-        # # Create service using parameter value
-        # self.entropy_service = self.create_service(
-        #     EntropyCalculation,
-        #     service_name,
-        #     self.entropy_calculation_callback
-        # )
+        # Create service using parameter value
+        self.entropy_gaze_calibration_service = self.create_service(
+            EntropyCalculation,
+            service_name,
+            self.gaze_calibration_callback
+        )
         
         self.get_logger().info('Entropy Gaze tracking node initialized')
         self.get_logger().info(f'Subscribed to: {image_topic} and {gaze_topic}')
@@ -174,6 +224,16 @@ class EntropyGazeNode(Node):
         self.processing_thread.start()
 
     
+    def get_is_calibrating(self):
+        """Thread-safe getter for calibration state"""
+        with self.calibration_lock:
+            return self.call_calibration
+    
+    def set_is_calibrating(self, state: bool):
+        """Thread-safe setter for calibration state"""
+        with self.calibration_lock:
+            self.call_calibration = state
+
     def image_callback(self, msg):
         """Callback for raw image data"""
         try:
@@ -213,25 +273,51 @@ class EntropyGazeNode(Node):
         return stamp.sec + stamp.nanosec * 1e-9
     
     def attempt_synchronization(self):
-        """Attempt to synchronize image and gaze data based on timestamps"""
+        """Attempt to synchronize image and gaze data based on timestamps, prioritizing latest messages"""
         if not self.image_buffer or not self.gaze_buffer:
             return
         
-        # Find the best matching pair
-        best_match = None
-        min_time_diff = float('inf')
+        # Get the latest (most recent) messages from each buffer
+        latest_img_timestamp, latest_img_cv, latest_img_msg = self.image_buffer[-1]
+        latest_gaze_timestamp, latest_gaze_msg = self.gaze_buffer[-1]
         
-        for img_timestamp, img_cv, img_msg in self.image_buffer:
-            for gaze_timestamp, gaze_msg in self.gaze_buffer:
-                time_diff = abs(img_timestamp - gaze_timestamp)
+        # First try to match the latest messages with each other
+        latest_time_diff = abs(latest_img_timestamp - latest_gaze_timestamp)
+        
+        if latest_time_diff <= self.sync_time_tolerance:
+            # Latest messages are synchronized, use them
+            best_match = (latest_img_cv, latest_gaze_msg, latest_img_timestamp, latest_gaze_timestamp)
+            min_time_diff = latest_time_diff
+        else:
+            # Latest messages don't sync well, search for best match prioritizing recent data
+            best_match = None
+            min_time_diff = float('inf')
+            
+            # Search backwards through buffers (newest to oldest) to prioritize recent matches
+            for img_timestamp, img_cv, img_msg in reversed(self.image_buffer):
+                for gaze_timestamp, gaze_msg in reversed(self.gaze_buffer):
+                    time_diff = abs(img_timestamp - gaze_timestamp)
+                    
+                    if time_diff <= self.sync_time_tolerance:
+                        # Prioritize matches that are more recent
+                        # Use a composite score: time_diff + age_penalty
+                        age_penalty_img = latest_img_timestamp - img_timestamp
+                        age_penalty_gaze = latest_gaze_timestamp - gaze_timestamp
+                        total_age_penalty = (age_penalty_img + age_penalty_gaze) * 0.1  # Weight age penalty
+                        
+                        composite_score = time_diff + total_age_penalty
+                        
+                        if composite_score < min_time_diff:
+                            min_time_diff = time_diff  # Store actual time diff, not composite score
+                            best_match = (img_cv, gaze_msg, img_timestamp, gaze_timestamp)
+                        
+                        # If we find a very good recent match, prefer it over searching further
+                        if time_diff < 0.01 and (latest_img_timestamp - img_timestamp) < 0.1:
+                            break
                 
-                if time_diff < min_time_diff and time_diff <= self.sync_time_tolerance:
-                    min_time_diff = time_diff
-                    best_match = (img_cv, gaze_msg, img_timestamp, gaze_timestamp)
-                    # print(f'Found potential match: img={img_timestamp:.3f}, gaze={gaze_timestamp:.3f}, diff={time_diff:.3f}s')
-                    # #print the message header stamp information
-                    # print(f'Image header stamp: sec={img_msg.header.stamp.sec}, nanosec={img_msg.header.stamp.nanosec}')
-                    # print(f'Gaze header stamp: sec={gaze_msg.header.stamp.sec}, nanosec={gaze_msg.header.stamp.nanosec}')   
+                # Early exit if we found a very good match
+                if best_match and min_time_diff < 0.01:
+                    break
 
         # If we found a good match, update synchronized pair and trigger processing
         if best_match is not None:
@@ -276,16 +362,32 @@ class EntropyGazeNode(Node):
         if self.latest_synchronized_pair is not None:
             return self.latest_synchronized_pair[0], self.latest_synchronized_pair[1]
         return None, None
+
+    def gaze_calibration_callback(self, request, response):
+        """Service callback for gaze calibration requests"""
+        # Set calibration state
+        self.set_is_calibrating(True)
+        
+        # Respond to service call
+        
     
     ## Function to constantly process synchronized data gaze calculations
     def process_gaze_data_into_entropy_attention(self):
         """Process synchronized data to compute entropy-based attention"""
         # First delay the processing loop by 5 seconds to allow buffers to fill
-        sleep(5)
+        sleep(3)
 
         sync_image, sync_gaze = self.get_synchronized_data()
         last_header_stamp = sync_gaze.header.stamp
         while rclpy.ok():
+            # get is_calibrating state
+            is_calibrating = self.get_is_calibrating()
+            # if calibrating, skip processing
+            if is_calibrating:
+                self.get_logger().info('Calibration in progress, skipping processing')
+                sleep(0.1)
+                continue
+
             sync_image, sync_gaze = self.get_synchronized_data()
 
             if sync_image is None or sync_gaze is None:
