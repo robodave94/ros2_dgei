@@ -433,7 +433,7 @@ class EntropyGazeNode(Node):
     def process_gaze_data_into_entropy_attention(self):
         """Process synchronized data to compute entropy-based attention"""
         # First delay the processing loop by 5 seconds to allow buffers to fill
-        sleep(3)
+        sleep(7)
 
         sync_image, sync_gaze = self.get_synchronized_data()
         last_header_stamp = sync_gaze.header.stamp
