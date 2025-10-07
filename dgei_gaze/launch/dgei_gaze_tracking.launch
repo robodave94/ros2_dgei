@@ -31,12 +31,11 @@
         <param name="gaze_topic" type="str" value="/gaze/data" />
         <param name="service_name" type="str" value="entropy_calculation" />
         <param name="entropy_viz_topic" type="str" value="/entropy_visualization" />
+        <param name="gaze_entropy_information_topic" type="str" value="/gaze/attention" />
         <param name="attention_configuration" type="str" value="$(find-pkg-share dgei_gaze)/config/data.yaml" />
 
     </node>
 
-    <node pkg="rviz2" exec="rviz2" name="rvzzz" >
-        <param name="config" value="$(find-pkg-share dgei_gaze)/config/rviz_image_conf.rviz" />
-    </node>
+    <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen" args="-d $(find-pkg-share dgei_gaze)/config/rviz_image_config.rviz"/>
 
 </launch>

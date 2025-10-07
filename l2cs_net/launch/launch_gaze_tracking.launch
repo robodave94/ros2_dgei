@@ -5,7 +5,7 @@
     <arg name="visualisation_topic" default="/gaze/vis_frame" />
     <arg name="data_publishing_topic" default="/gaze/data" />
     <arg name="raw_image_topic" default="/gaze/image_raw" />
-    <arg name="model_path" default="/home/vscode/dev/gaze_ws/src/ros2_dgei/l2cs_net/weights/L2CSNet_gaze360.pkl" />
+    <arg name="model_path" default="$(find-pkg-share l2cs_net)/weights/L2CSNet_gaze360.pkl" />
     <arg name="device" default="cuda" />
     <arg name="backbone_architecture" default="ResNet50" />
     <arg name="publish_rate" default="25.0" />

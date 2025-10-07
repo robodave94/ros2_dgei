@@ -4,8 +4,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from sensor_msgs.msg import Image
-from dgei_interfaces.msg import GazeFrame, GazeDetection
-from dgei_interfaces.srv import EntropyCalculation
+from dgei_interfaces.msg import GazeFrame, GazeDetection, EntropyGazeFrame, EntropyGazeDetection
+from dgei_interfaces.srv import EntropyCalibrationCalculation
 from cv_bridge import CvBridge
 
 from dgei_gaze.data import read_gaze_config, write_yaml_file
@@ -138,7 +138,8 @@ class EntropyGazeNode(Node):
         self.declare_parameter('gaze_topic', '/gaze/data')
         self.declare_parameter('service_name', 'entropy_calculation')
         self.declare_parameter('entropy_viz_topic', '/entropy_visualization')
-        self.declare_parameter('attention_configuration', '/home/vscode/dev/gaze_ws/src/ros2_dgei/dgei_gaze/config/data.yaml')
+        self.declare_parameter('gaze_entropy_information_topic', '/gaze/attention')
+        self.declare_parameter('attention_configuration', '')
         self.declare_parameter('sync_time_tolerance', 0.05)  # 50ms tolerance for synchronization
         
         # Get parameter values
@@ -148,7 +149,10 @@ class EntropyGazeNode(Node):
         service_name = self.get_parameter('service_name').get_parameter_value().string_value
         entropy_viz_topic = self.get_parameter('entropy_viz_topic').get_parameter_value().string_value
         self.attention_config_path = self.get_parameter('attention_configuration').get_parameter_value().string_value
-
+        self.attention_topic_name = self.get_parameter('gaze_entropy_information_topic').get_parameter_value().string_value
+        if self.attention_config_path == '' or self.attention_config_path is None:
+            raise ValueError('Attention configuration file path must be provided via parameter "attention_configuration"')
+        
         self.attention_config = read_gaze_config(self.attention_config_path)
 
         # Initialize synchronization variables
@@ -195,10 +199,17 @@ class EntropyGazeNode(Node):
             entropy_viz_topic,
             10
         )
+
+        # Publisher for entropy gaze data
+        self.entropy_gaze_publisher = self.create_publisher(
+            EntropyGazeFrame,
+            self.attention_topic_name,
+            10
+        )
         
         # Create service using parameter value
         self.entropy_gaze_calibration_service = self.create_service(
-            EntropyCalculation,
+            EntropyCalibrationCalculation,
             service_name,
             self.gaze_calibration_callback
         )
@@ -478,22 +489,68 @@ class EntropyGazeNode(Node):
                 gaze_entropy_viz = sync_image.copy()
                 # Sleep briefly to avoid busy-waiting
                 if len(face_detections) > 0:
+                    # Make a new entropy gaze frame message
+                    entropy_gaze_frame_msg = EntropyGazeFrame()
+                    
+                    # get new header data for the message
+                    entropy_gaze_frame_msg.header.stamp = rclpy.clock.Clock().now().to_msg()
+                    entropy_gaze_frame_msg.header.frame_id = "entropy_data_array"
+
                     results = self.attention_tracker_collection.process_frame_data(face_detections)
                     # Fix: iterate over the dictionary items to get both face_id and result_data
                     for face_id, result_data in results.items():
                         # self.get_logger().info(f"Face ID {face_id}: Attention={result_data['attention_state']}, Smoothed Pitch={result_data['smoothed_pitch']:.1f}, Smoothed Yaw={result_data['smoothed_yaw']:.1f}")
                         # Pass the face_id separately to the visualization function
                         gaze_entropy_viz = visualise_attention_entropy_on_frame(face_id, result_data, gaze_detections[face_id], gaze_entropy_viz)
+
+                        # Create EntropyGazeDetection message
+                        entropy_gaze_det_msg = EntropyGazeDetection()
+                        """
+                        std_msgs/Header header
+                        uint8 id
+                        # Add gaze detection message
+                        GazeDetection gaze_detection
+
+                        # Gaze analysis fields
+                        bool attention_state
+                        bool sustained_attention
+                        float64 smoothed_pitch
+                        float64 smoothed_yaw
+                        float64 gaze_score
+                        int32 robot_looks
+                        float64 gaze_entropy
+                        """
+                        entropy_gaze_det_msg.header = entropy_gaze_frame_msg.header  # Use same header as frame
+                        entropy_gaze_det_msg.id = face_id
+                        entropy_gaze_det_msg.gaze_detection = gaze_detections[face_id]
+                        entropy_gaze_det_msg.attention_state = bool(result_data['attention_state'])
+                        entropy_gaze_det_msg.sustained_attention = bool(result_data['sustained_attention']) 
+                        entropy_gaze_det_msg.smoothed_pitch = round(result_data['smoothed_pitch'], 5)
+                        entropy_gaze_det_msg.smoothed_yaw = round(result_data['smoothed_yaw'], 5)
+                        entropy_gaze_det_msg.gaze_score = round(float(result_data['gaze_score']), 5)
+                        entropy_gaze_det_msg.robot_looks = int(result_data['robot_looks'])
+                        entropy_gaze_det_msg.gaze_entropy = round(result_data['gaze_entropy'], 5)
+                        # Append to frame message
+                        entropy_gaze_frame_msg.entropy_msgs.append(entropy_gaze_det_msg)
+
                 
-                # publish the visualization
-                if self.entropy_viz_publisher is not None:
-                    try:
-                        viz_msg = self.bridge.cv2_to_imgmsg(gaze_entropy_viz, encoding="bgr8")
-                        viz_msg.header = sync_gaze.header  # Preserve original header info
-                        self.entropy_viz_publisher.publish(viz_msg)
-                        # self.get_logger().info('Published entropy visualization frame')
-                    except Exception as e:
-                        self.get_logger().error(f'Error publishing entropy visualization: {str(e)}')
+                    # publish the entropy gaze frame message
+                    if self.entropy_gaze_publisher is not None:
+                        try:
+                            self.entropy_gaze_publisher.publish(entropy_gaze_frame_msg)
+                            # self.get_logger().info('Published entropy gaze data frame')
+                        except Exception as e:
+                            self.get_logger().error(f'Error publishing entropy gaze data: {str(e)}')
+
+                    # publish the visualization
+                    if self.entropy_viz_publisher is not None:
+                        try:
+                            viz_msg = self.bridge.cv2_to_imgmsg(gaze_entropy_viz, encoding="bgr8")
+                            viz_msg.header = sync_gaze.header  # Preserve original header info
+                            self.entropy_viz_publisher.publish(viz_msg)
+                            # self.get_logger().info('Published entropy visualization frame')
+                        except Exception as e:
+                            self.get_logger().error(f'Error publishing entropy visualization: {str(e)}')
 
                 # sleep(0.02)
 
