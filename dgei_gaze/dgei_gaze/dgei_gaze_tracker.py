@@ -8,10 +8,10 @@ from dgei_interfaces.msg import GazeFrame, GazeDetection
 from dgei_interfaces.srv import EntropyCalculation
 from cv_bridge import CvBridge
 
-from dgei_gaze.data import read_gaze_config
+from dgei_gaze.data import read_gaze_config, write_yaml_file
 
 from l2cs.gaze_detectors import Gaze_Detector
-from dgei_gaze.entropy import AttentionTracker, AttentionTrackerCollection
+from dgei_gaze.entropy import AttentionTrackerCollection, AttentionCalibrator
 
 from threading import Thread, Lock
 
@@ -134,9 +134,6 @@ class EntropyGazeNode(Node):
         self.bridge = CvBridge()
         
         # Declare ROS parameters with default values
-        self.declare_parameter('calibration_time', 10.0)
-        self.declare_parameter('frames_required', 300)
-        self.declare_parameter('deg_angle_tolerance', 15.0)
         self.declare_parameter('image_topic', '/gaze/image_raw')
         self.declare_parameter('gaze_topic', '/gaze/data')
         self.declare_parameter('service_name', 'entropy_calculation')
@@ -145,18 +142,14 @@ class EntropyGazeNode(Node):
         self.declare_parameter('sync_time_tolerance', 0.05)  # 50ms tolerance for synchronization
         
         # Get parameter values
-        self.calibration_time = self.get_parameter('calibration_time').get_parameter_value().double_value
-        self.frames_required = self.get_parameter('frames_required').get_parameter_value().integer_value
-        self.deg_angle_tolerance = self.get_parameter('deg_angle_tolerance').get_parameter_value().double_value
-        self.rad_angle_tolerance = math.radians(self.deg_angle_tolerance)
         self.sync_time_tolerance = self.get_parameter('sync_time_tolerance').get_parameter_value().double_value
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         gaze_topic = self.get_parameter('gaze_topic').get_parameter_value().string_value
         service_name = self.get_parameter('service_name').get_parameter_value().string_value
         entropy_viz_topic = self.get_parameter('entropy_viz_topic').get_parameter_value().string_value
-        attention_config_path = self.get_parameter('attention_configuration').get_parameter_value().string_value
+        self.attention_config_path = self.get_parameter('attention_configuration').get_parameter_value().string_value
 
-        self.attention_config = read_gaze_config(attention_config_path)
+        self.attention_config = read_gaze_config(self.attention_config_path)
 
         # Initialize synchronization variables
         self.image_buffer = deque(maxlen=1)  # Store recent images with timestamps
@@ -214,7 +207,6 @@ class EntropyGazeNode(Node):
         self.get_logger().info(f'Subscribed to: {image_topic} and {gaze_topic}')
         self.get_logger().info(f'Service available: {service_name}')
         self.get_logger().info(f'Publishing entropy visualization to: {entropy_viz_topic}')
-        self.get_logger().info(f'Parameters - Calibration time: {self.calibration_time}s, Frames: {self.frames_required}, Angle tolerance: {self.deg_angle_tolerance}°')
         self.get_logger().info(f'Synchronization tolerance: {self.sync_time_tolerance}s')
         self.get_logger().info(f'Loaded attention config: {self.attention_config}')
 
@@ -368,8 +360,74 @@ class EntropyGazeNode(Node):
         # Set calibration state
         self.set_is_calibrating(True)
         
-        # Respond to service call
+        calibration_time = request.calibration_time
+        frames_required = request.frames_required
+        angle_tolerance = request.angle_tolerance
+
+        # Initialise calibrator
+        calibrator = AttentionCalibrator(   calibration_time=calibration_time,
+                                            samples_needed=frames_required,
+                                            angle_tolerance=angle_tolerance)
         
+        calibrator.start_calibration()
+        
+        while self.get_is_calibrating() and rclpy.ok():
+            sync_image, sync_gaze = self.get_synchronized_data()
+            if sync_image is None or sync_gaze is None:
+                self.get_logger().info('Waiting for synchronized data to start calibration...')
+                sleep(0.1)
+                continue
+            
+            face_detections = []
+            for gaze_det in sync_gaze.gazes:
+                # Process each gaze detection
+                # Get face ID and gaze angles
+                face_id = gaze_det.id
+                pitch = math.degrees(gaze_det.pitch)
+                yaw = math.degrees(gaze_det.yaw)
+
+                # setup
+                face_detections.append({'id': face_id, 'pitch': pitch, 'yaw': yaw})
+
+            if len(face_detections) == 1:
+                # get the pitch and yaw of the single face
+                pitch = face_detections[0]['pitch']
+                yaw = face_detections[0]['yaw']
+                status, msg = calibrator.process_calibration_frame(pitch, yaw)
+                if status:
+                    self.get_logger().info('Calibration successful')
+                    self.set_is_calibrating(False)
+                    # print the message
+                    self.get_logger().info('----')
+                    self.get_logger().info(msg)
+                    self.get_logger().info('----')
+                    break
+                else:
+                    self.get_logger().info(msg)
+            else:
+                self.get_logger().info('Calibration requires exactly one face in the frame')
+                # Calibration cannot proceed without exactly one face, unsuccessul attempt and cancel operation
+                response.success = False
+                self.set_is_calibrating(False)
+                return response
+            
+
+            sleep(0.02)
+
+        if calibrator.is_calibrated:
+                self.get_logger().info('Calibration complete, computing thresholds...')
+
+        self.attention_tracker_collection.update_calibration_dictionary(calibrator.get_calibrated_parameters())
+        write_yaml_file(calibrator.get_calibrated_parameters(),self.attention_config_path)
+
+        self.get_logger().info('Calibration parameters updated in Attention Tracker Collection')
+        
+        response.success = True
+        self.set_is_calibrating(False)
+
+        return response
+
+
     
     ## Function to constantly process synchronized data gaze calculations
     def process_gaze_data_into_entropy_attention(self):

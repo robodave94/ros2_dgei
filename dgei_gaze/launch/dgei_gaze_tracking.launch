@@ -1,0 +1,42 @@
+<launch>
+
+    <include file="$(find-pkg-share l2cs_net)/launch/launch_gaze_tracking.launch">
+        <!-- Gaze Tracking Node Parameters -->
+        <arg name="camera_number" value="0" />
+        <arg name="visualisation_topic" value="/gaze/vis_frame" />
+        <arg name="data_publishing_topic" value="/gaze/data" />
+        <arg name="raw_image_topic" value="/gaze/image_raw" />
+        <arg name="model_path" value="$(find-pkg-share l2cs_net)/weights/L2CSNet_gaze360.pkl" />
+        <arg name="device" value="cuda" />
+        <arg name="backbone_architecture" value="ResNet50" />
+        <arg name="publish_rate" value="25.0" />
+        
+        <!-- Kalman Filter Tracking Parameters -->
+        <arg name="tracker_max_disappeared" value="20" />
+        <arg name="tracker_max_distance" value="80.0" />
+        <arg name="tracker_min_hits" value="3" />
+        <arg name="tracker_gaze_smoothing" value="0.7" />
+
+        <!-- Tracker Initialization Parameters -->
+        <arg name="tracker_initial_hits" value="1" />
+        <arg name="tracker_initial_hit_streak" value="1" />
+        <arg name="tracker_initial_age" value="1" />
+    </include>
+
+    <!-- Launch the gaze tracking node from l2cs_net package -->
+    <node pkg="dgei_gaze" exec="dgei_attention_tracking" name="dgei_gaze_tracking_node" output="screen">
+
+        <!-- Basic Configuration Parameters -->
+        <param name="image_topic" type="str" value="/gaze/image_raw" />
+        <param name="gaze_topic" type="str" value="/gaze/data" />
+        <param name="service_name" type="str" value="entropy_calculation" />
+        <param name="entropy_viz_topic" type="str" value="/entropy_visualization" />
+        <param name="attention_configuration" type="str" value="$(find-pkg-share dgei_gaze)/config/data.yaml" />
+
+    </node>
+
+    <node pkg="rviz2" exec="rviz2" name="rvzzz" >
+        <param name="config" value="$(find-pkg-share dgei_gaze)/config/rviz_image_conf.rviz" />
+    </node>
+
+</launch>

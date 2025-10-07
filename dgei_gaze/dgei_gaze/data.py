@@ -86,12 +86,33 @@ def write_yaml_file(data: Dict[str, Any], file_path: str) -> None:
     Raises:
         yaml.YAMLError: If there's an error writing the YAML file
     """
+    def round_floats(obj):
+        """Recursively round float values to 2 decimal places and ensure proper type"""
+        if isinstance(obj, (float, int)):
+            # Convert to standard Python float and round to 2 decimal places
+            return float(round(float(obj), 2))
+        elif isinstance(obj, dict):
+            return {key: round_floats(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [round_floats(item) for item in obj]
+        else:
+            return obj
+    
     try:
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
+        # Round all float values to 2 decimal places and ensure proper types
+        rounded_data = round_floats(data)
+        
         with open(file_path, 'w', encoding='utf-8') as file:
-            yaml.safe_dump(data, file, default_flow_style=False, sort_keys=False)
+            yaml.safe_dump(
+                rounded_data, 
+                file, 
+                default_flow_style=False, 
+                sort_keys=False,
+                allow_unicode=True
+            )
             
     except yaml.YAMLError as e:
         raise yaml.YAMLError(f"Error writing YAML file {file_path}: {e}")

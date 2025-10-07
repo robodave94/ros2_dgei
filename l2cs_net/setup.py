@@ -11,6 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/launch_gaze_tracking.launch']),
+        ('share/' + package_name + '/weights', ['weights/L2CSNet_gaze360.pkl']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
